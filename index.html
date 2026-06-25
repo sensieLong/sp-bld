@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PrintBleed Pro - Intelligent Bleed Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+    <header>
+        <div>
+            <h1>PrintBleed <span>Pro</span></h1>
+            <div class="subtitle">Pixel-Mirroring Canvas Bleed Automator</div>
+        </div>
+    </header>
+
+    <main>
+        <div id="dropZone" class="drop-zone">
+            <svg viewBox="0 0 24 24">
+                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+            </svg>
+            <p>Drag & drop print files here</p>
+            <span>Supports PDFs, PNGs, and JPEGs</span>
+            <input type="file" id="fileInput" accept="image/png, image/jpeg, application/pdf" multiple>
+        </div>
+
+        <div class="workspace-grid" id="workspace" style="display: none;">
+            <div class="panel">
+                <div class="panel-title">Bleed Calibration</div>
+                
+                <div class="form-group">
+                    <label for="bleedUnit">Measurement Unit</label>
+                    <select id="bleedUnit">
+                        <option value="in" selected>Inches (in)</option>
+                        <option value="mm">Millimeters (mm)</option>
+                        <option value="px">Pixels (px)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label id="bleedValueLabel" for="bleedValue">Bleed Size (per side)</label>
+                    <input type="number" id="bleedValue" value="0.125" min="0" step="0.01">
+                </div>
+
+                <div class="form-group" id="dpiGroup">
+                    <label for="dpiInput">Target Print Density (DPI)</label>
+                    <input type="number" id="dpiInput" value="300" min="72" max="1200">
+                </div>
+
+                <label class="checkbox-group">
+                    <input type="checkbox" id="toggleGuides" checked>
+                    Overlay Trim Guide Lines (Red)
+                </label>
+
+                <div class="panel-title" style="margin-top: 2rem; margin-bottom: 1rem;">Export Manifest</div>
+                <button class="btn btn-success" id="btnExportPDF">
+                    Export Document (PDF)
+                </button>
+                <button class="btn btn-primary" id="btnExportZIP">
+                    Export Slices Archive (ZIP)
+                </button>
+                <button class="btn" id="btnClear" style="background-color: var(--bg-surface-light); color: var(--text-main);">
+                    Reset Canvas
+                </button>
+            </div>
+
+            <div class="preview-container" id="previewContainer"></div>
+        </div>
+    </main>
+
+    <div class="loading-screen" id="loadingScreen">
+        <div class="cyber-box">
+            <div class="cyber-scanline"></div>
+            <div class="cyber-header">
+                <span class="cyber-title">CORE MATRIX KERNEL ACTIVE</span>
+                <span class="cyber-status-pill">PROCESSING</span>
+            </div>
+            <div class="cyber-body">
+                <div class="cyber-terminal-text" id="loadingText">INITIALIZING GRAPHICS COMPILE...</div>
+                <div class="cyber-sub-log" id="loadingSubtext">Pipeline ready for standard output manifest initialization...</div>
+                <div class="cyber-track">
+                    <div class="cyber-bar" id="loadingBar"></div>
+                </div>
+            </div>
+            <div class="cyber-footer">DO NOT SHUT DOWN OR REFRESH SESSION</div>
+        </div>
+    </div>
+
+    <script src="./script.js"></script>
+</body>
+</html>

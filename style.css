@@ -1,0 +1,380 @@
+:root {
+    --bg-main: #121214;
+    --bg-surface: #1e1e24;
+    --bg-surface-light: #2a2a32;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --success: #10b981;
+    --success-hover: #059669;
+    --text-main: #f3f4f6;
+    --text-muted: #9ca3af;
+    --border: #374151;
+    
+    /* Cyber Aesthetic Palettes */
+    --cyber-neon: #00f0ff;
+    --cyber-dark: #0a0a0f;
+    --cyber-pink: #ff0055;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+header {
+    background-color: var(--bg-surface);
+    padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+header h1 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+header h1 span {
+    color: var(--accent);
+}
+
+.subtitle {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 2rem;
+    gap: 2rem;
+    max-width: 1400px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.workspace-grid {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 2rem;
+    align-items: start;
+}
+
+@media (max-width: 900px) {
+    .workspace-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.panel {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+}
+
+.panel-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 1.25rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+}
+
+.form-group {
+    margin-bottom: 1.25rem;
+}
+
+label {
+    display: block;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-main);
+}
+
+input[type="number"], select {
+    width: 100%;
+    background-color: var(--bg-main);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem;
+    color: var(--text-main);
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+input[type="number"]:focus, select:focus {
+    border-color: var(--accent);
+}
+
+.checkbox-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    margin-top: 1rem;
+    cursor: pointer;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 0.75rem;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    margin-top: 0.5rem;
+    gap: 0.5rem;
+}
+
+.btn-primary {
+    background-color: var(--accent);
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: var(--accent-hover);
+}
+
+.btn-success {
+    background-color: var(--success);
+    color: white;
+}
+
+.btn-success:hover {
+    background-color: var(--success-hover);
+}
+
+.btn:disabled {
+    background-color: var(--border);
+    color: var(--text-muted);
+    cursor: not-allowed;
+}
+
+.drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 4rem 2rem;
+    text-align: center;
+    background-color: var(--bg-surface);
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.drop-zone.dragover {
+    border-color: var(--accent);
+    background-color: var(--bg-surface-light);
+}
+
+.drop-zone svg {
+    width: 48px;
+    height: 48px;
+    fill: var(--text-muted);
+    margin-bottom: 1rem;
+}
+
+.drop-zone p {
+    font-size: 0.95rem;
+    color: var(--text-main);
+    margin-bottom: 0.25rem;
+}
+
+.drop-zone span {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+#fileInput {
+    display: none;
+}
+
+.preview-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 1.5rem;
+    width: 100%;
+}
+
+.preview-card {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.8rem;
+}
+
+.card-title {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+
+.card-dims {
+    color: var(--text-muted);
+}
+
+.canvas-wrapper {
+    position: relative;
+    background-color: #0b0b0c;
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 1rem;
+    min-height: 250px;
+}
+
+canvas {
+    max-width: 100%;
+    max-height: 400px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    display: block;
+}
+
+.trim-guide {
+    position: absolute;
+    border: 1px dashed #ef4444;
+    pointer-events: none;
+    box-sizing: border-box;
+    z-index: 10;
+}
+
+/* --- Cyberpunk Loading Console Interface Style Block --- */
+.loading-screen {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: rgba(6, 6, 8, 0.96);
+    background-image: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%), 
+                      linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
+    background-size: 100% 4px, 6px 100%;
+    backdrop-filter: blur(8px);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 1.5rem;
+}
+
+.cyber-box {
+    background-color: var(--cyber-dark);
+    border: 1px solid var(--cyber-neon);
+    box-shadow: 0 0 25px rgba(0, 240, 255, 0.25), inset 0 0 15px rgba(0, 240, 255, 0.1);
+    width: 100%;
+    max-width: 500px;
+    padding: 1.75rem;
+    position: relative;
+    overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+/* Corner Bracket Accents */
+.cyber-box::before {
+    content: ''; position: absolute; top: 0; left: 0; width: 12px; height: 12px;
+    border-top: 3px solid var(--cyber-pink); border-left: 3px solid var(--cyber-pink);
+}
+.cyber-box::after {
+    content: ''; position: absolute; bottom: 0; right: 0; width: 12px; height: 12px;
+    border-bottom: 3px solid var(--cyber-pink); border-right: 3px solid var(--cyber-pink);
+}
+
+.cyber-scanline {
+    position: absolute; top: 0; left: 0; right: 0; height: 10px;
+    background: linear-gradient(to bottom, rgba(0, 240, 255, 0), rgba(0, 240, 255, 0.2), rgba(0, 240, 255, 0));
+    animation: scanAnimation 2.5s linear infinite;
+    pointer-events: none;
+}
+
+.cyber-header {
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px dashed rgba(0, 240, 255, 0.4); padding-bottom: 0.75rem; margin-bottom: 1.25rem;
+}
+
+.cyber-title {
+    color: var(--cyber-neon); font-size: 0.85rem; font-weight: bold; letter-spacing: 1px;
+    text-shadow: 0 0 5px rgba(0, 240, 255, 0.6);
+}
+
+.cyber-status-pill {
+    background-color: var(--cyber-pink); color: white; font-size: 0.7rem; font-weight: bold;
+    padding: 0.15rem 0.5rem; border-radius: 2px; animation: blink 1s steps(2, start) infinite;
+}
+
+.cyber-body {
+    display: flex; flex-direction: column; gap: 0.5rem; text-align: left;
+}
+
+.cyber-terminal-text {
+    color: #ffffff; font-size: 1.1rem; font-weight: bold; letter-spacing: 0.5px;
+}
+
+.cyber-sub-log {
+    color: var(--text-muted); font-size: 0.75rem; min-height: 32px; line-height: 1.3;
+}
+
+.cyber-track {
+    background-color: rgba(55, 65, 81, 0.4); border: 1px solid rgba(0, 240, 255, 0.2);
+    height: 8px; margin-top: 0.5rem; position: relative; overflow: hidden;
+}
+
+.cyber-bar {
+    background: linear-gradient(90deg, var(--cyber-neon), var(--cyber-pink));
+    height: 100%; width: 30%; position: absolute; left: -30%;
+    animation: pipelineLoading 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    box-shadow: 0 0 8px var(--cyber-neon);
+}
+
+.cyber-footer {
+    margin-top: 1.5rem; border-top: 1px solid rgba(57, 65, 81, 0.5); padding-top: 0.75rem;
+    color: rgba(255, 0, 85, 0.7); font-size: 0.7rem; font-weight: bold; text-align: center; letter-spacing: 0.5px;
+}
+
+/* Animations Core Mapping */
+@keyframes scanAnimation {
+    0% { top: -10px; }
+    100% { top: 100%; }
+}
+@keyframes blink {
+    to { visibility: hidden; }
+}
+@keyframes pipelineLoading {
+    0% { left: -30%; width: 30%; }
+    50% { width: 60%; }
+    100% { left: 100%; width: 10%; }
+}
