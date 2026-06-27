@@ -6,6 +6,7 @@
     <title>PrintBleed Pro - Intelligent Bleed Generator</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <link rel="stylesheet" href="./style.css">
 </head>
@@ -14,7 +15,7 @@
     <header>
         <div>
             <h1>PrintBleed <span>Pro</span></h1>
-            <div class="subtitle">Pixel-Mirroring Canvas Bleed Automator</div>
+            <div class="subtitle">Pixel-Mirroring Canvas & CMYK Bleed Automator</div>
         </div>
     </header>
 
@@ -24,7 +25,7 @@
                 <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
             </svg>
             <p>Drag & drop print files here</p>
-            <span>Supports PDFs, PNGs, and JPEGs</span>
+            <span>Supports PDFs, PNGs, and JPEGs (Auto-detects RGB / CMYK)</span>
             <input type="file" id="fileInput" accept="image/png, image/jpeg, application/pdf" multiple>
         </div>
 
@@ -58,13 +59,13 @@
 
                 <div class="panel-title" style="margin-top: 2rem; margin-bottom: 1rem;">Export Manifest</div>
                 <button class="btn btn-success" id="btnExportPDF">
-                    Export Document (PDF)
+                    Export Proof (PDF)
                 </button>
                 <button class="btn btn-primary" id="btnExportZIP">
-                    Export Slices Archive (ZIP)
+                    Export Print Archive (ZIP)
                 </button>
                 <button class="btn" id="btnClear" style="background-color: var(--bg-surface-light); color: var(--text-main);">
-                    Reset Canvas
+                    Reset Workspace
                 </button>
             </div>
 

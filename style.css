@@ -276,7 +276,6 @@ canvas {
     z-index: 10;
 }
 
-/* --- Cyberpunk Loading Console Interface Style Block --- */
 .loading-screen {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -304,7 +303,6 @@ canvas {
     font-family: 'Courier New', Courier, monospace;
 }
 
-/* Corner Bracket Accents */
 .cyber-box::before {
     content: ''; position: absolute; top: 0; left: 0; width: 12px; height: 12px;
     border-top: 3px solid var(--cyber-pink); border-left: 3px solid var(--cyber-pink);
@@ -365,7 +363,6 @@ canvas {
     color: rgba(255, 0, 85, 0.7); font-size: 0.7rem; font-weight: bold; text-align: center; letter-spacing: 0.5px;
 }
 
-/* Animations Core Mapping */
 @keyframes scanAnimation {
     0% { top: -10px; }
     100% { top: 100%; }
@@ -377,4 +374,34 @@ canvas {
     0% { left: -30%; width: 30%; }
     50% { width: 60%; }
     100% { left: 100%; width: 10%; }
+}
+
+.badge {
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: bold;
+    margin-right: 0.5rem;
+    color: white;
+}
+
+.badge-rgb {
+    background-color: var(--accent);
+}
+
+.badge-cmyk {
+    background-color: var(--cyber-pink);
+    box-shadow: 0 0 5px rgba(255, 0, 85, 0.4);
+}
+
+.badge-pantone {
+    background: linear-gradient(90deg, #7b2d8b, #c0392b);
+    box-shadow: 0 0 6px rgba(123, 45, 139, 0.5);
+    cursor: help;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    vertical-align: middle;
 }
