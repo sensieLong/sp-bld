@@ -57,6 +57,38 @@
                     Overlay Trim Guide Lines (Red)
                 </label>
 
+                <div class="panel-title" style="margin-top: 2rem; margin-bottom: 1rem;">Bleed Style</div>
+                <div class="bleed-mode-group">
+                    <label class="radio-option">
+                        <input type="radio" name="bleedMode" value="blur-mirror" checked>
+                        <span class="radio-label">
+                            <span class="radio-title">Blurred + Mirrored</span>
+                            <span class="radio-desc">Mirror-flipped border, softened with blur</span>
+                        </span>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="bleedMode" value="mirror-only">
+                        <span class="radio-label">
+                            <span class="radio-title">Mirrored Only</span>
+                            <span class="radio-desc">Mirror-flipped border, no blur</span>
+                        </span>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="bleedMode" value="blur-only">
+                        <span class="radio-label">
+                            <span class="radio-title">Blurred Only</span>
+                            <span class="radio-desc">Edge pixels extended then blurred</span>
+                        </span>
+                    </label>
+                    <label class="radio-option">
+                        <input type="radio" name="bleedMode" value="solid-extend">
+                        <span class="radio-label">
+                            <span class="radio-title">Solid Extend</span>
+                            <span class="radio-desc">Edge pixels stretched, no blur or mirror</span>
+                        </span>
+                    </label>
+                </div>
+
                 <div class="panel-title" style="margin-top: 2rem; margin-bottom: 1rem;">Export Manifest</div>
                 <button class="btn btn-success" id="btnExportPDF">
                     Export Proof (PDF)
@@ -72,6 +104,24 @@
             <div class="preview-container" id="previewContainer"></div>
         </div>
     </main>
+
+    <!-- ── Channel Inspector Modal ── -->
+    <div class="channel-modal" id="channelModal">
+        <div class="channel-modal-inner">
+            <div class="channel-modal-header">
+                <div class="channel-modal-title" id="channelModalTitle">File Name</div>
+                <button class="channel-modal-close" onclick="closeChannelModal()" title="Close">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="channel-modal-nav" id="channelNav"></div>
+            <div class="channel-modal-canvas-wrap">
+                <canvas id="channelModalCanvas"></canvas>
+            </div>
+        </div>
+    </div>
 
     <div class="loading-screen" id="loadingScreen">
         <div class="cyber-box">

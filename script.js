@@ -48,24 +48,77 @@ function detectJpegColorSpace(buffer) {
 }
 
 // --- PANTONE SPOT COLOR DETECTOR (PDF only) ---
-// Scans raw PDF bytes for Separation or DeviceN colorspace definitions whose
-// name string contains "PANTONE". This is how spot colors are encoded in the
-// PDF spec: e.g. [ /Separation /PANTONE#20485#20C /DeviceCMYK <<...>> ]
-// Returns an array of unique Pantone color name strings found, or [] if none.
+// Scans raw PDF bytes for Separation colorspace definitions containing "PANTONE".
+// PDF Separation syntax:
+//   [ /Separation /PANTONE#20485#20C /DeviceCMYK { c m y k } ]
+// Also tries to extract the CMYK alternate tint values from the tint transform
+// function (a simple array or sampled function) so we can render spot previews.
+//
+// Returns array of { name: string, C: 0-1, M: 0-1, Y: 0-1, K: 0-1 }
+// If CMYK alternates can't be parsed, defaults to { C:0, M:0, Y:0, K:1 } (black).
 function detectPantoneSpotsInPdf(buffer) {
-    const bytes  = new Uint8Array(buffer);
-    const text   = new TextDecoder('latin1').decode(bytes); // latin1 = safe 1:1 byte mapping
-    const found  = new Set();
+    const text  = new TextDecoder('latin1').decode(new Uint8Array(buffer));
+    const spots = new Map(); // name → {C,M,Y,K}
 
-    // Match /PANTONE ... / or (PANTONE ...) — both name-object and string-object forms
+    // Decode PDF hex-encoded name characters e.g. #20 → space
+    function decodePdfName(raw) {
+        return raw.replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))).trim();
+    }
+
+    // Try to extract 4 CMYK numbers from a PDF function body near the spot definition.
+    // Looks for patterns like: { 0.1 0.9 0.0 0.05 } or arrays [ 0.1 0.9 0.0 0.05 ]
+    function extractCmykValues(chunk) {
+        // Match 4 consecutive decimal numbers (floats 0-1)
+        const numRe = /([01]?\.\d+|\d+\.?\d*)/g;
+        const nums  = [];
+        let nm;
+        while ((nm = numRe.exec(chunk)) !== null) {
+            const v = parseFloat(nm[1]);
+            if (v >= 0 && v <= 1) nums.push(v);
+            if (nums.length >= 4) break;
+        }
+        if (nums.length >= 4) return { C: nums[0], M: nums[1], Y: nums[2], K: nums[3] };
+        return null;
+    }
+
+    // Primary: match full Separation array with /DeviceCMYK alternate
+    // Pattern: /Separation /NAME /DeviceCMYK <<...>>  or  /Separation /NAME /DeviceCMYK { ... }
+    const sepRe = /\[\/Separation\s+\/([^\s\[\]]+)\s+\/DeviceCMYK\s+(.{1,400}?)\]/gs;
+    let m;
+    while ((m = sepRe.exec(text)) !== null) {
+        const rawName = m[1];
+        if (!/pantone/i.test(rawName)) continue;
+        const name = decodePdfName(rawName);
+        if (spots.has(name)) continue;
+        const cmyk = extractCmykValues(m[2]) || { C:0, M:0, Y:0, K:1 };
+        spots.set(name, cmyk);
+    }
+
+    // Fallback: match name-only (string form) and name-object form, no CMYK available
     const nameRe   = /\/([Pp][Aa][Nn][Tt][Oo][Nn][Ee][^\s\/\[\]<>()]{1,60})/g;
     const stringRe = /\(([Pp][Aa][Nn][Tt][Oo][Nn][Ee][^)]{1,60})\)/g;
+    while ((m = nameRe.exec(text))   !== null) {
+        const name = decodePdfName(m[1]);
+        if (!spots.has(name)) spots.set(name, { C:0, M:0, Y:0, K:1 });
+    }
+    while ((m = stringRe.exec(text)) !== null) {
+        const name = m[1].trim();
+        if (!spots.has(name)) spots.set(name, { C:0, M:0, Y:0, K:1 });
+    }
 
-    let m;
-    while ((m = nameRe.exec(text))   !== null) found.add(m[1].replace(/#([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))).trim());
-    while ((m = stringRe.exec(text)) !== null) found.add(m[1].trim());
+    // Return array of spot objects
+    return [...spots.entries()].map(([name, cmyk]) => ({ name, ...cmyk }));
+}
 
-    return [...found];
+// --- PDF CMYK DETECTOR ---
+// Scans raw PDF bytes for DeviceCMYK colorspace references.
+// Returns true if the PDF uses CMYK color (and has no Pantone spots — caller checks Pantone first).
+function detectCmykInPdf(buffer) {
+    const text = new TextDecoder('latin1').decode(new Uint8Array(buffer));
+    // Common patterns: /DeviceCMYK, /CS /CMYK, colorspace dictionaries
+    return /\/DeviceCMYK/.test(text) ||
+           /\/ColorSpace\s*\/CMYK/.test(text) ||
+           /\/CS\s*\/CMYK/.test(text);
 }
 
 // Decode a raw CMYK JPEG into a 4-channel Uint8Array using an offscreen canvas.
@@ -104,11 +157,12 @@ function decodeCmykJpeg(file, buffer) {
 
 // Local Application Memory State
 const state = {
-    files: [], 
+    files: [],
     bleedValue: 0.125,
     bleedUnit: 'in',
     dpi: 300,
-    showGuides: true
+    showGuides: true,
+    bleedMode: 'blur-mirror'  // 'blur-mirror' | 'mirror-only' | 'blur-only' | 'solid-extend'
 };
 
 // DOM Cache
@@ -155,6 +209,13 @@ bleedValue.addEventListener('input', (e) => { state.bleedValue = parseFloat(e.ta
 dpiInput.addEventListener('input', (e) => { state.dpi = parseInt(e.target.value) || 300; recalculateAndRender(); });
 toggleGuides.addEventListener('change', (e) => { state.showGuides = e.target.checked; toggleGuideVisibility(); });
 btnClear.addEventListener('click', resetApplicationState);
+
+document.querySelectorAll('input[name="bleedMode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        state.bleedMode = e.target.value;
+        recalculateAndRender();
+    });
+});
 btnExportPDF.addEventListener('click', exportDocumentAsPDF);
 btnExportZIP.addEventListener('click', exportSlicesAsZIP);
 
@@ -204,22 +265,28 @@ async function processFiles(fileList) {
             } else if (file.type === 'application/pdf') {
                 const pdfBuffer = await file.arrayBuffer();
 
-                // Scan for Pantone spot color names before rasterising
+                // Priority: Pantone (spot) > CMYK > RGB
+                // Check Pantone first — a CMYK PDF with spot plates should be treated as Pantone
                 const pantoneSpots = detectPantoneSpotsInPdf(pdfBuffer);
                 const hasPantone   = pantoneSpots.length > 0;
+                const hasCmyk      = !hasPantone && detectCmykInPdf(pdfBuffer);
 
                 const canvases = await renderPdfToCanvases(file, pdfBuffer);
                 canvases.forEach((canvas, idx) => {
+                    let type = 'rgb';
+                    if (hasPantone) type = 'pantone';
+                    else if (hasCmyk) type = 'pdf-cmyk';
+
                     state.files.push({
                         name: `${file.name} (Page ${idx + 1})`,
-                        type: hasPantone ? 'pantone' : 'rgb',
+                        type,
                         canvas,
-                        // Stash original buffer + spot names for Pantone files so export
-                        // can embed the raw PDF bytes via pdf-lib (same strategy as CMYK)
-                        ...(hasPantone && {
+                        // Both Pantone and CMYK-PDF stash the original buffer so
+                        // pdf-lib can embed the raw page at export (original preserved)
+                        ...((hasPantone || hasCmyk) && {
                             originalBuffer: pdfBuffer,
-                            pantoneSpots,
-                            pageIndex: idx
+                            pageIndex: idx,
+                            ...(hasPantone && { pantoneSpots })
                         })
                     });
                 });
@@ -280,8 +347,10 @@ function calculateBleedInPixels() {
     return Math.round((state.bleedValue / 25.4) * state.dpi);
 }
 
-// --- RGB CANVAS ALGORITHM ---
-function generateRGBBleedCanvas(srcCanvas, bPx) {
+// --- RGB CANVAS ALGORITHM (mode-aware) ---
+// mode: 'blur-mirror' | 'mirror-only' | 'blur-only' | 'solid-extend'
+function generateRGBBleedCanvas(srcCanvas, bPx, mode) {
+    if (!mode) mode = state.bleedMode || 'blur-mirror';
     const W = srcCanvas.width, H = srcCanvas.height;
     const B = Math.max(0, Math.min(bPx, Math.floor(W/2)-2, Math.floor(H/2)-2));
     const outCanvas = document.createElement('canvas');
@@ -289,94 +358,128 @@ function generateRGBBleedCanvas(srcCanvas, bPx) {
     const ctx = outCanvas.getContext('2d');
     if (B === 0) { ctx.drawImage(srcCanvas, 0, 0); return outCanvas; }
 
+    const doMirror = mode === 'blur-mirror' || mode === 'mirror-only';
+    const doBlur   = mode === 'blur-mirror' || mode === 'blur-only';
+
     const stage = document.createElement('canvas');
     stage.width = outCanvas.width; stage.height = outCanvas.height;
     const sCtx = stage.getContext('2d');
-    
-    sCtx.drawImage(srcCanvas, B, B);
-    sCtx.save(); sCtx.translate(B, B); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, 0, W, B, 0, 0, W, B); sCtx.restore();
-    sCtx.save(); sCtx.translate(B, B + H); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, H - B, W, B, 0, -B, W, B); sCtx.restore();
-    sCtx.save(); sCtx.translate(B, B); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, 0, 0, B, H, 0, 0, B, H); sCtx.restore();
-    sCtx.save(); sCtx.translate(B + W, B); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, W - B, 0, B, H, -B, 0, B, H); sCtx.restore();
-    sCtx.save(); sCtx.translate(B, B); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, 0, B, B, 0, 0, B, B); sCtx.restore();
-    sCtx.save(); sCtx.translate(B + W, B); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - B, 0, B, B, -B, 0, B, B); sCtx.restore();
-    sCtx.save(); sCtx.translate(B, B + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, H - B, B, B, 0, -B, B, B); sCtx.restore();
-    sCtx.save(); sCtx.translate(B + W, B + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - B, H - B, B, B, -B, -B, B, B); sCtx.restore();
 
-    ctx.filter = 'blur(4px)';
-    ctx.drawImage(stage, 0, 0);
-    ctx.filter = 'none';
+    if (doMirror) {
+        // Mirror-flip all 8 surrounding zones
+        sCtx.drawImage(srcCanvas, B, B);
+        sCtx.save(); sCtx.translate(B, B); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, 0, W, B, 0, 0, W, B); sCtx.restore();
+        sCtx.save(); sCtx.translate(B, B + H); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, H - B, W, B, 0, -B, W, B); sCtx.restore();
+        sCtx.save(); sCtx.translate(B, B); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, 0, 0, B, H, 0, 0, B, H); sCtx.restore();
+        sCtx.save(); sCtx.translate(B + W, B); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, W - B, 0, B, H, -B, 0, B, H); sCtx.restore();
+        sCtx.save(); sCtx.translate(B, B); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, 0, B, B, 0, 0, B, B); sCtx.restore();
+        sCtx.save(); sCtx.translate(B + W, B); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - B, 0, B, B, -B, 0, B, B); sCtx.restore();
+        sCtx.save(); sCtx.translate(B, B + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, H - B, B, B, 0, -B, B, B); sCtx.restore();
+        sCtx.save(); sCtx.translate(B + W, B + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - B, H - B, B, B, -B, -B, B, B); sCtx.restore();
+    } else {
+        // Solid-extend: clamp/stretch edge pixels into bleed zone (no flip)
+        // Top edge
+        sCtx.drawImage(srcCanvas, 0, 0, W, 1, B, 0, W, B);
+        // Bottom edge
+        sCtx.drawImage(srcCanvas, 0, H - 1, W, 1, B, B + H, W, B);
+        // Left edge
+        sCtx.drawImage(srcCanvas, 0, 0, 1, H, 0, B, B, H);
+        // Right edge
+        sCtx.drawImage(srcCanvas, W - 1, 0, 1, H, B + W, B, B, H);
+        // Corners (stretch from corner pixel)
+        sCtx.drawImage(srcCanvas, 0, 0, 1, 1, 0, 0, B, B);
+        sCtx.drawImage(srcCanvas, W - 1, 0, 1, 1, B + W, 0, B, B);
+        sCtx.drawImage(srcCanvas, 0, H - 1, 1, 1, 0, B + H, B, B);
+        sCtx.drawImage(srcCanvas, W - 1, H - 1, 1, 1, B + W, B + H, B, B);
+        // Original center
+        sCtx.drawImage(srcCanvas, B, B);
+    }
+
+    if (doBlur) {
+        ctx.filter = 'blur(4px)';
+        ctx.drawImage(stage, 0, 0);
+        ctx.filter = 'none';
+    } else {
+        ctx.drawImage(stage, 0, 0);
+    }
+    // Always stamp original sharp center back
     ctx.drawImage(srcCanvas, B, B);
     return outCanvas;
 }
 
-// --- CMYK BINARY MATH ALGORITHMS ---
-function mirrorAndBlurCMYK(srcDataObj, bPx) {
+// --- CMYK BINARY MATH ALGORITHMS (mode-aware) ---
+// mode: 'blur-mirror' | 'mirror-only' | 'blur-only' | 'solid-extend'
+function mirrorAndBlurCMYK(srcDataObj, bPx, mode) {
+    if (!mode) mode = state.bleedMode || 'blur-mirror';
     const W = srcDataObj.width;
     const H = srcDataObj.height;
     const B = Math.max(0, Math.min(bPx, Math.floor(W/2)-2, Math.floor(H/2)-2));
     const destW = W + (B * 2);
     const destH = H + (B * 2);
-    
-    // 1. Mirror Array
-    let outData = new Uint8Array(destW * destH * 4);
-    const src = srcDataObj.data;
 
+    const doMirror = mode === 'blur-mirror' || mode === 'mirror-only';
+    const doBlur   = mode === 'blur-mirror' || mode === 'blur-only';
+
+    const src = srcDataObj.data;
+    let outData = new Uint8Array(destW * destH * 4);
+
+    // 1. Fill bleed zone
     for (let y = 0; y < destH; y++) {
         for (let x = 0; x < destW; x++) {
             let sx = x - B;
             let sy = y - B;
-            if (sx < 0) sx = -sx - 1; else if (sx >= W) sx = W - (sx - W) - 1;
-            if (sy < 0) sy = -sy - 1; else if (sy >= H) sy = H - (sy - H) - 1;
-            
+            if (doMirror) {
+                // Mirror-clamp: flip outside-boundary samples back in
+                if (sx < 0) sx = -sx - 1; else if (sx >= W) sx = W - (sx - W) - 1;
+                if (sy < 0) sy = -sy - 1; else if (sy >= H) sy = H - (sy - H) - 1;
+            } else {
+                // Solid-extend: clamp to edge pixel
+                sx = Math.max(0, Math.min(W - 1, sx));
+                sy = Math.max(0, Math.min(H - 1, sy));
+            }
             const srcIdx = (sy * W + sx) * 4;
             const dstIdx = (y * destW + x) * 4;
-            outData[dstIdx] = src[srcIdx];
+            outData[dstIdx]   = src[srcIdx];
             outData[dstIdx+1] = src[srcIdx+1];
             outData[dstIdx+2] = src[srcIdx+2];
             outData[dstIdx+3] = src[srcIdx+3];
         }
     }
 
-    if (B > 0) {
-        // 2. Simple Box Blur (radius 3) on the entire array
+    if (B > 0 && doBlur) {
+        // 2. Separable box blur (radius 3) over the full expanded canvas
         const rad = 3;
         const temp = new Uint8Array(outData.length);
-        
         // Horizontal pass
         for (let y = 0; y < destH; y++) {
             for (let x = 0; x < destW; x++) {
-                let c=0, m=0, yy=0, k=0, count=0;
+                let c=0,m=0,yy=0,k=0,count=0;
                 for (let r = -rad; r <= rad; r++) {
-                    let nx = Math.max(0, Math.min(destW-1, x + r));
-                    let idx = (y * destW + nx) * 4;
-                    c += outData[idx]; m += outData[idx+1]; yy += outData[idx+2]; k += outData[idx+3];
-                    count++;
+                    const nx = Math.max(0, Math.min(destW-1, x+r));
+                    const idx = (y*destW+nx)*4;
+                    c+=outData[idx]; m+=outData[idx+1]; yy+=outData[idx+2]; k+=outData[idx+3]; count++;
                 }
-                let out = (y * destW + x) * 4;
-                temp[out] = c/count; temp[out+1] = m/count; temp[out+2] = yy/count; temp[out+3] = k/count;
+                const out=(y*destW+x)*4;
+                temp[out]=c/count; temp[out+1]=m/count; temp[out+2]=yy/count; temp[out+3]=k/count;
             }
         }
-        
-        // Vertical pass (write back to outData)
+        // Vertical pass
         for (let y = 0; y < destH; y++) {
             for (let x = 0; x < destW; x++) {
-                let c=0, m=0, yy=0, k=0, count=0;
+                let c=0,m=0,yy=0,k=0,count=0;
                 for (let r = -rad; r <= rad; r++) {
-                    let ny = Math.max(0, Math.min(destH-1, y + r));
-                    let idx = (ny * destW + x) * 4;
-                    c += temp[idx]; m += temp[idx+1]; yy += temp[idx+2]; k += temp[idx+3];
-                    count++;
+                    const ny = Math.max(0, Math.min(destH-1, y+r));
+                    const idx = (ny*destW+x)*4;
+                    c+=temp[idx]; m+=temp[idx+1]; yy+=temp[idx+2]; k+=temp[idx+3]; count++;
                 }
-                let out = (y * destW + x) * 4;
-                outData[out] = c/count; outData[out+1] = m/count; outData[out+2] = yy/count; outData[out+3] = k/count;
+                const out=(y*destW+x)*4;
+                outData[out]=c/count; outData[out+1]=m/count; outData[out+2]=yy/count; outData[out+3]=k/count;
             }
         }
-
-        // NOTE: The blurred mirror fills the entire canvas including the center.
-        // compositeOriginalCMYK() stamps the pristine original back at export time.
     }
 
+    // NOTE: center is intentionally left blurred/filled here;
+    // the pdf-lib export layers the original on top at (bleedOffsetPt, bleedOffsetPt).
     return { data: outData, width: destW, height: destH };
 }
 
@@ -536,8 +639,8 @@ async function recalculateAndRender() {
         
         let displayWidthIn, displayHeightIn, displayCanvas, innerWidth, innerHeight;
         
-        if (fileItem.type === 'rgb' || fileItem.type === 'pantone') {
-            // Pantone files were rasterised on intake (canvas is available) — bleed same as RGB
+        if (fileItem.type === 'rgb' || fileItem.type === 'pantone' || fileItem.type === 'pdf-cmyk') {
+            // Pantone, PDF-CMYK and RGB all have a rasterised canvas from pdfjs/img decode
             const bledCanvas = generateRGBBleedCanvas(fileItem.canvas, bPx);
             displayCanvas   = bledCanvas;
             displayWidthIn  = (bledCanvas.width  / state.dpi).toFixed(3);
@@ -545,6 +648,7 @@ async function recalculateAndRender() {
             innerWidth  = fileItem.canvas.width;
             innerHeight = fileItem.canvas.height;
         } else {
+            // JPEG CMYK — pixel data path
             const processedCMYK = mirrorAndBlurCMYK(fileItem.cmykData, bPx);
             displayCanvas   = createGhostRgbCanvas(processedCMYK);
             displayWidthIn  = (processedCMYK.width  / state.dpi).toFixed(3);
@@ -553,14 +657,16 @@ async function recalculateAndRender() {
             innerHeight = fileItem.cmykData.height;
         }
 
-        // Build badge — Pantone files get their own badge + a tooltip listing spot names
+        // Build badge
         let modeBadge;
         if (fileItem.type === 'cmyk') {
             modeBadge = `<span class="badge badge-cmyk">CMYK RAW</span>`;
+        } else if (fileItem.type === 'pdf-cmyk') {
+            modeBadge = `<span class="badge badge-cmyk">PDF CMYK</span>`;
         } else if (fileItem.type === 'pantone') {
-            const tipNames = fileItem.pantoneSpots.join(', ');
+            const tipNames = fileItem.pantoneSpots.map(s => s.name).join(', ');
             const shortLabel = fileItem.pantoneSpots.length === 1
-                ? fileItem.pantoneSpots[0]
+                ? fileItem.pantoneSpots[0].name
                 : `${fileItem.pantoneSpots.length} Spot Colors`;
             modeBadge = `<span class="badge badge-pantone" title="${tipNames}">🎨 ${shortLabel}</span>`;
         } else {
@@ -588,14 +694,455 @@ async function recalculateAndRender() {
         guideOverlay.style.width = `${widthPct}%`; guideOverlay.style.height = `${heightPct}%`;
         guideOverlay.style.display = state.showGuides ? 'block' : 'none';
 
+        // Click-to-inspect tooltip hint
+        const clickHint = document.createElement('div');
+        clickHint.className = 'canvas-click-hint';
+        clickHint.textContent = 'Click to inspect channels';
+
         canvasWrapper.appendChild(displayCanvas);
         canvasWrapper.appendChild(guideOverlay);
+        canvasWrapper.appendChild(clickHint);
+        canvasWrapper.style.cursor = 'pointer';
+        canvasWrapper.addEventListener('click', () => openChannelViewer(fileItem));
+
         card.appendChild(cardHeader);
         card.appendChild(canvasWrapper);
         previewContainer.appendChild(card);
         
         await new Promise(r => setTimeout(r, 10)); // keep UI unblocked
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CHANNEL VIEWER
+// ═══════════════════════════════════════════════════════════════
+
+// Extract pixel data from any file type into a normalised object:
+// { mode: 'cmyk'|'rgb', width, height, data: Uint8Array (4 bytes/px) }
+// CMYK  → { C, M, Y, K } per pixel  (0–255 = 0–100% ink)
+// RGB   → { R, G, B, A } per pixel
+function extractChannelData(fileItem) {
+    if (fileItem.type === 'cmyk') {
+        // Return a COPY — never expose the live array. The original in
+        // fileItem.cmykData.data must stay untouched for correct downloads.
+        return {
+            mode: 'cmyk',
+            width:  fileItem.cmykData.width,
+            height: fileItem.cmykData.height,
+            data:   fileItem.cmykData.data.slice() // ← defensive copy
+        };
+    }
+
+    // For canvas-based types (rgb, pdf-cmyk, pantone) — read RGBA from canvas
+    const src = fileItem.canvas;
+    const ctx = src.getContext('2d');
+    const imgData = ctx.getImageData(0, 0, src.width, src.height);
+    const rgba = imgData.data;
+
+    if (fileItem.type === 'rgb') {
+        return { mode: 'rgb', width: src.width, height: src.height, data: rgba };
+    }
+
+    // pdf-cmyk / pantone — derive CMYK from rendered RGBA
+    const cmyk = new Uint8Array(rgba.length);
+    for (let i = 0; i < rgba.length; i += 4) {
+        const r = rgba[i]/255, g = rgba[i+1]/255, b = rgba[i+2]/255;
+        const k = 1 - Math.max(r, g, b);
+        const d = (1 - k) || 1e-6;
+        cmyk[i]   = Math.round(((1-r-k)/d)*255);
+        cmyk[i+1] = Math.round(((1-g-k)/d)*255);
+        cmyk[i+2] = Math.round(((1-b-k)/d)*255);
+        cmyk[i+3] = Math.round(k*255);
+    }
+    return { mode: 'cmyk', width: src.width, height: src.height, data: cmyk };
+}
+
+// Build the list of channel descriptors for a file item
+// Each: { id, label, colorHint, channelIndex }
+// colorHint is used to colour the pill badge
+function getChannels(fileItem) {
+    if (fileItem.type === 'rgb') {
+        return [
+            { id: 'R', label: 'Red',   colorHint: '#ef4444', channelIndex: 0 },
+            { id: 'G', label: 'Green', colorHint: '#22c55e', channelIndex: 1 },
+            { id: 'B', label: 'Blue',  colorHint: '#3b82f6', channelIndex: 2 },
+            { id: 'A', label: 'Alpha', colorHint: '#9ca3af', channelIndex: 3 },
+        ];
+    }
+    // CMYK-family (cmyk, pdf-cmyk, pantone)
+    const channels = [
+        { id: 'C', label: 'Cyan',    colorHint: '#06b6d4', channelIndex: 0 },
+        { id: 'M', label: 'Magenta', colorHint: '#ec4899', channelIndex: 1 },
+        { id: 'Y', label: 'Yellow',  colorHint: '#eab308', channelIndex: 2 },
+        { id: 'K', label: 'Black',   colorHint: '#6b7280', channelIndex: 3 },
+    ];
+    // Append Pantone spot channels — each carries its CMYK alternate {C,M,Y,K} (0-1 floats)
+    if (fileItem.type === 'pantone' && fileItem.pantoneSpots) {
+        fileItem.pantoneSpots.forEach((spot, i) => {
+            channels.push({
+                id: `SPOT_${i}`,
+                label: spot.name,
+                colorHint: '#7b2d8b',
+                channelIndex: -1,   // not a standard channel index
+                spotCmyk: spot      // { name, C, M, Y, K } — CMYK alternate tint values
+            });
+        });
+    }
+    return channels;
+}
+
+// Render a single channel preview canvas that exactly matches what the
+// downloaded TIFF will look like when opened in a CMYK-aware application.
+//
+// Rule: the preview IS the download, rendered to screen.
+//
+// CMYK process channels (C / M / Y / K):
+//   Zero out all other channels, then convert CMYK→RGB for display.
+//   Result: Cyan channel shows cyan ink on white, Magenta shows magenta,
+//   Yellow shows yellow, Black shows neutral gray scale.
+//   This is identical to what Photoshop shows when you solo a channel.
+//
+// Spot channels:
+//   Compute per-pixel density (dot product with spot's CMYK alternate vector),
+//   then apply the spot's CMYK recipe weighted by that density and convert to RGB.
+//   The displayed color is the spot's actual ink color — not a grayscale proxy.
+//
+// RGB channels: luminance (unchanged).
+//
+// srcData — caller can supply the pristine pixel array (fileItem.cmykData.data)
+//   so the preview reads the same source as the download. Defaults to channelData.data.
+function renderChannelPlate(channelData, channel, srcData) {
+    const { width, height, data, mode } = channelData;
+    const px = srcData || data; // use pristine source if supplied
+    const out = document.createElement('canvas');
+    out.width = width; out.height = height;
+    const ctx = out.getContext('2d');
+    const img = ctx.createImageData(width, height);
+    const od  = img.data;
+
+    if (mode === 'rgb') {
+        // RGB: isolate the chosen channel, black out the others
+        const ci = channel.channelIndex;
+        for (let i = 0; i < px.length; i += 4) {
+            od[i]   = ci === 0 ? px[i]   : 0;
+            od[i+1] = ci === 1 ? px[i+1] : 0;
+            od[i+2] = ci === 2 ? px[i+2] : 0;
+            od[i+3] = ci === 3 ? px[i+3] : 255;
+        }
+    } else if (channel.channelIndex >= 0) {
+        // ── CMYK process channel ──
+        // Build a CMYK value where only the selected channel has data,
+        // then convert to RGB for display — mirrors the downloaded TIFF exactly.
+        const ci = channel.channelIndex;
+        for (let i = 0; i < px.length; i += 4) {
+            const c = ci === 0 ? px[i]  /255 : 0;
+            const m = ci === 1 ? px[i+1]/255 : 0;
+            const y = ci === 2 ? px[i+2]/255 : 0;
+            const k = ci === 3 ? px[i+3]/255 : 0;
+            od[i]   = Math.round(255*(1-c)*(1-k));
+            od[i+1] = Math.round(255*(1-m)*(1-k));
+            od[i+2] = Math.round(255*(1-y)*(1-k));
+            od[i+3] = 255;
+        }
+    } else {
+        // ── Spot channel ──
+        // Compute density (dot product), apply spot CMYK alternate weighted by density,
+        // convert to RGB. The preview shows the actual spot ink color.
+        const sc  = channel.spotCmyk;
+        const sC  = sc.C, sM = sc.M, sY = sc.Y, sK = sc.K;
+        const mag = Math.sqrt(sC*sC + sM*sM + sY*sY + sK*sK) || 1;
+        for (let i = 0; i < px.length; i += 4) {
+            const pC = px[i]  /255, pM = px[i+1]/255,
+                  pY = px[i+2]/255, pK = px[i+3]/255;
+            const density = Math.min(1, Math.max(0,
+                (pC*sC + pM*sM + pY*sY + pK*sK) / mag
+            ));
+            // Apply spot ink recipe at this density, convert to RGB
+            const c = sC*density, m = sM*density, y = sY*density, k = sK*density;
+            od[i]   = Math.round(255*(1-c)*(1-k));
+            od[i+1] = Math.round(255*(1-m)*(1-k));
+            od[i+2] = Math.round(255*(1-y)*(1-k));
+            od[i+3] = 255;
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    return out;
+}
+
+// Render a composite (active channels visible) onto the modal canvas.
+// Mirrors exactly what the downloaded separations will look like when recombined:
+//   - Only active channels contribute ink
+//   - Uses srcData (pristine CMYK array for CMYK JPEG files) so the preview
+//     reads the same pixel values as the download, not the round-tripped copy
+//   - Spot channels contribute via their CMYK alternate recipe weighted by density
+function renderComposite(channelData, activeIds, allChannels, targetCanvas, srcData) {
+    const { width, height, data, mode } = channelData;
+    const px  = srcData || data; // pristine source if supplied, else derived
+    const ctx = targetCanvas.getContext('2d');
+    const img = ctx.createImageData(width, height);
+    const od  = img.data;
+
+    const activeSet = new Set(activeIds);
+    if (activeSet.size === 0) {
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, width, height);
+        return;
+    }
+
+    const activeSpots = allChannels.filter(ch => activeSet.has(ch.id) && ch.spotCmyk);
+
+    if (mode === 'rgb') {
+        for (let i = 0; i < px.length; i += 4) {
+            od[i]   = activeSet.has('R') ? px[i]   : 0;
+            od[i+1] = activeSet.has('G') ? px[i+1] : 0;
+            od[i+2] = activeSet.has('B') ? px[i+2] : 0;
+            od[i+3] = activeSet.has('A') ? px[i+3] : 255;
+        }
+    } else {
+        // CMYK composite — only active process + spot channels contribute ink.
+        // This matches exactly what you get if you download each active channel
+        // as a TIFF and recombine them in a CMYK-aware app.
+        for (let i = 0; i < px.length; i += 4) {
+            let c = activeSet.has('C') ? px[i]  /255 : 0;
+            let m = activeSet.has('M') ? px[i+1]/255 : 0;
+            let y = activeSet.has('Y') ? px[i+2]/255 : 0;
+            let k = activeSet.has('K') ? px[i+3]/255 : 0;
+
+            // Spot contributions — density from pristine pixel values
+            for (const spot of activeSpots) {
+                const sc  = spot.spotCmyk;
+                const mag = Math.sqrt(sc.C*sc.C + sc.M*sc.M + sc.Y*sc.Y + sc.K*sc.K) || 1;
+                const pC = px[i]/255, pM = px[i+1]/255,
+                      pY = px[i+2]/255, pK = px[i+3]/255;
+                const density = Math.min(1, Math.max(0,
+                    (pC*sc.C + pM*sc.M + pY*sc.Y + pK*sc.K) / mag
+                ));
+                c = Math.min(1, c + sc.C*density);
+                m = Math.min(1, m + sc.M*density);
+                y = Math.min(1, y + sc.Y*density);
+                k = Math.min(1, k + sc.K*density);
+            }
+
+            od[i]   = Math.round(255*(1-c)*(1-k));
+            od[i+1] = Math.round(255*(1-m)*(1-k));
+            od[i+2] = Math.round(255*(1-y)*(1-k));
+            od[i+3] = 255;
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+}
+
+// Download a single channel separation.
+//
+// KEY DESIGN RULE: for CMYK JPEG files (fileItem.type === 'cmyk'), the download
+// ALWAYS reads from fileItem.cmykData.data — the pristine decoded array captured
+// at intake — never from channelData.data, which is a display approximation
+// derived by round-tripping through the browser's RGB renderer and back-calculating
+// CMYK. That round-trip destroys overprint and rich-black relationships.
+//
+// channelData is used ONLY for display/preview. It is never the download source.
+//
+// For CMYK process channels (C/M/Y/K):
+//   Exports a CMYK TIFF where only the chosen channel has its original values;
+//   all other channels are hard-zeroed. e.g. "Download Black" → TIFF with
+//   C=0, M=0, Y=0, K=exact original K values from fileItem.cmykData.data.
+//
+// For Spot channels (Pantone):
+//   Computes spot density from the pristine CMYK data, then outputs a CMYK TIFF
+//   where each pixel carries the spot's CMYK alternate weighted by that density.
+//
+// For RGB channels:
+//   Exports a grayscale PNG (no CMYK available).
+function downloadChannelPlate(channelData, channel, fileName, fileItem) {
+    const safeName = channel.label.replace(/[\s/]+/g, '_');
+
+    // ── Determine the true source pixel data ──
+    // For CMYK JPEG files: always use the pristine original array, never channelData.
+    // For all other types: channelData.data is the best we have (derived from canvas).
+    const isTrueCmyk = fileItem && fileItem.type === 'cmyk';
+    const srcData    = isTrueCmyk ? fileItem.cmykData.data : channelData.data;
+    const { width, height } = channelData;
+
+    if (channelData.mode === 'cmyk' && channel.channelIndex >= 0) {
+        // ── CMYK process channel → single-separation CMYK TIFF ──
+        // Reads from srcData (pristine for CMYK JPEG, derived for pdf-cmyk/pantone).
+        const outData = new Uint8Array(width * height * 4);
+        const ci = channel.channelIndex; // 0=C 1=M 2=Y 3=K
+        for (let i = 0; i < srcData.length; i += 4) {
+            outData[i]   = ci === 0 ? srcData[i]   : 0;
+            outData[i+1] = ci === 1 ? srcData[i+1] : 0;
+            outData[i+2] = ci === 2 ? srcData[i+2] : 0;
+            outData[i+3] = ci === 3 ? srcData[i+3] : 0;
+        }
+        const tiff = encodeToCMYK_TIFF({ data: outData, width, height }, state.dpi);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(tiff);
+        a.download = `${fileName}_${safeName}_separation.tiff`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+
+    } else if (channelData.mode === 'cmyk' && channel.spotCmyk) {
+        // ── Spot channel → CMYK TIFF weighted by spot density ──
+        const sc  = channel.spotCmyk;
+        const mag = Math.sqrt(sc.C*sc.C + sc.M*sc.M + sc.Y*sc.Y + sc.K*sc.K) || 1;
+        const outData = new Uint8Array(width * height * 4);
+        for (let i = 0; i < srcData.length; i += 4) {
+            // Density: dot product of pixel's CMYK with spot's CMYK alternate vector
+            const pC = srcData[i]/255, pM = srcData[i+1]/255,
+                  pY = srcData[i+2]/255, pK = srcData[i+3]/255;
+            const density = Math.min(1, Math.max(0,
+                (pC*sc.C + pM*sc.M + pY*sc.Y + pK*sc.K) / mag
+            ));
+            outData[i]   = Math.round(sc.C * density * 255);
+            outData[i+1] = Math.round(sc.M * density * 255);
+            outData[i+2] = Math.round(sc.Y * density * 255);
+            outData[i+3] = Math.round(sc.K * density * 255);
+        }
+        const tiff = encodeToCMYK_TIFF({ data: outData, width, height }, state.dpi);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(tiff);
+        a.download = `${fileName}_${safeName}_spot_separation.tiff`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+
+    } else {
+        // ── RGB channel → grayscale PNG plate ──
+        const plate = renderChannelPlate(channelData, channel);
+        plate.toBlob(blob => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${fileName}_${safeName}_channel.png`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }, 'image/png');
+    }
+}
+
+// Open the channel viewer modal for a given fileItem
+function openChannelViewer(fileItem) {
+    const modal = document.getElementById('channelModal');
+    const modalTitle = document.getElementById('channelModalTitle');
+    const channelNav = document.getElementById('channelNav');
+    const modalCanvas = document.getElementById('channelModalCanvas');
+    const modalCtx = modalCanvas.getContext('2d');
+
+    // Extract channel data once
+    const channelData = extractChannelData(fileItem);
+    const channels    = getChannels(fileItem);
+
+    // All channels active by default (composite view)
+    const activeChannels = new Set(channels.map(c => c.id));
+
+    modalTitle.textContent = fileItem.name;
+    modalCanvas.width  = channelData.width;
+    modalCanvas.height = channelData.height;
+
+    // Build channel pill nav
+    channelNav.innerHTML = '';
+
+    // "Composite" toggle (all on/off)
+    const compositeBtn = document.createElement('button');
+    compositeBtn.className = 'ch-pill ch-pill-composite active';
+    compositeBtn.textContent = 'Composite';
+    compositeBtn.addEventListener('click', () => {
+        const allActive = channels.every(c => activeChannels.has(c.id));
+        if (allActive) {
+            activeChannels.clear();
+            compositeBtn.classList.remove('active');
+        } else {
+            channels.forEach(c => activeChannels.add(c.id));
+            compositeBtn.classList.add('active');
+        }
+        updatePills();
+        redrawModal();
+    });
+    channelNav.appendChild(compositeBtn);
+
+    // Separator
+    const sep = document.createElement('div');
+    sep.className = 'ch-sep';
+    channelNav.appendChild(sep);
+
+    // Per-channel pills
+    channels.forEach(ch => {
+        const pill = document.createElement('button');
+        pill.className = 'ch-pill active';
+        pill.style.setProperty('--ch-color', ch.colorHint);
+        pill.dataset.chId = ch.id;
+
+        const dot  = document.createElement('span');
+        dot.className = 'ch-dot';
+        const lbl  = document.createElement('span');
+        lbl.textContent = ch.id.startsWith('SPOT_') ? ch.label : `${ch.label} (${ch.id})`;
+
+        // Download button for this channel
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'ch-dl-btn';
+        dlBtn.title = `Download ${ch.label} channel`;
+        dlBtn.innerHTML = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v8M5 7l3 3 3-3M3 13h10"/></svg>`;
+        dlBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const cleanName = fileItem.name.replace(/\.[^/.]+$/, '');
+            // Pass fileItem so downloadChannelPlate can reach the pristine cmykData
+            downloadChannelPlate(channelData, ch, cleanName, fileItem);
+        });
+
+        pill.appendChild(dot);
+        pill.appendChild(lbl);
+        pill.appendChild(dlBtn);
+
+        pill.addEventListener('click', () => {
+            if (activeChannels.has(ch.id)) {
+                activeChannels.delete(ch.id);
+                pill.classList.remove('active');
+            } else {
+                activeChannels.add(ch.id);
+                pill.classList.add('active');
+            }
+            updateCompositeBtn();
+            redrawModal();
+        });
+
+        channelNav.appendChild(pill);
+    });
+
+    function updatePills() {
+        channelNav.querySelectorAll('.ch-pill[data-ch-id]').forEach(pill => {
+            pill.classList.toggle('active', activeChannels.has(pill.dataset.chId));
+        });
+    }
+
+    function updateCompositeBtn() {
+        const allActive = channels.every(c => activeChannels.has(c.id));
+        compositeBtn.classList.toggle('active', allActive);
+    }
+
+    // Pristine pixel source — for CMYK JPEG files this is fileItem.cmykData.data
+    // (the original decoded array, never mutated). For all other types it's
+    // channelData.data (derived from canvas). Using this ensures preview === download.
+    const pristineSrc = (fileItem.type === 'cmyk') ? fileItem.cmykData.data : null;
+
+    function redrawModal() {
+        if (activeChannels.size === 1) {
+            // Single channel: show its actual ink color (not grayscale)
+            const ch = channels.find(c => activeChannels.has(c.id));
+            if (ch) {
+                const plate = renderChannelPlate(channelData, ch, pristineSrc);
+                modalCtx.drawImage(plate, 0, 0);
+                return;
+            }
+        }
+        // Multi-channel composite — pass pristine source so pixels match download
+        renderComposite(channelData, [...activeChannels], channels, modalCanvas, pristineSrc);
+    }
+
+    // Initial draw — composite
+    redrawModal();
+    modal.classList.add('open');
+}
+
+function closeChannelModal() {
+    document.getElementById('channelModal').classList.remove('open');
 }
 
 function toggleGuideVisibility() {
@@ -738,15 +1285,16 @@ async function exportDocumentAsPDF() {
                 const page = masterDoc.addPage([widthPt, heightPt]);
                 page.drawImage(img, { x: 0, y: 0, width: widthPt, height: heightPt });
 
-            } else if (fileItem.type === 'pantone') {
-                // Pantone path: bleed JPEG bg + original PDF page embedded on top (spot colors preserved)
-                const pantPdfBytes = await buildPantoneBleedPdf(fileItem, bPx, state.dpi);
-                const pantDoc      = await PDFDocument.load(pantPdfBytes);
-                const [copiedPage] = await masterDoc.copyPages(pantDoc, [0]);
+            } else if (fileItem.type === 'pantone' || fileItem.type === 'pdf-cmyk') {
+                // Pantone + PDF-CMYK: bleed JPEG bg + original PDF page embedded on top
+                // pdf-lib preserves both Separation/DeviceN (Pantone) and DeviceCMYK colorspaces
+                const pdfBytes     = await buildPantoneBleedPdf(fileItem, bPx, state.dpi);
+                const srcDoc       = await PDFDocument.load(pdfBytes);
+                const [copiedPage] = await masterDoc.copyPages(srcDoc, [0]);
                 masterDoc.addPage(copiedPage);
 
             } else {
-                // CMYK path: bleed JPEG bg + original JPEG on top (CMYK DCTDecode preserved)
+                // JPEG CMYK: bleed JPEG bg + original JPEG on top (DCTDecode preserved)
                 const cmykPdfBytes = await buildCmykBleedPdf(fileItem, bPx, state.dpi);
                 const cmykDoc      = await PDFDocument.load(cmykPdfBytes);
                 const [copiedPage] = await masterDoc.copyPages(cmykDoc, [0]);
@@ -787,10 +1335,14 @@ async function exportSlicesAsZIP() {
                 zipEngine.file(`${cleanName}_bleed_rgb_${i + 1}.png`, dpiBlob);
 
             } else if (item.type === 'pantone') {
-                // Pantone: PDF only — bleed JPEG bg + original PDF page embedded on top.
-                // Spot color separations (Separation/DeviceN) are preserved via pdf-lib embedPdf.
+                // Pantone: PDF — bleed JPEG bg + original PDF page on top (spot colors preserved)
                 const pantPdfBytes = await buildPantoneBleedPdf(item, bPx, state.dpi);
                 zipEngine.file(`${cleanName}_bleed_pantone_${i + 1}.pdf`, pantPdfBytes);
+
+            } else if (item.type === 'pdf-cmyk') {
+                // PDF-CMYK: PDF — same two-layer strategy, DeviceCMYK colorspace preserved
+                const pdfCmykBytes = await buildPantoneBleedPdf(item, bPx, state.dpi);
+                zipEngine.file(`${cleanName}_bleed_cmyk_${i + 1}.pdf`, pdfCmykBytes);
 
             } else {
                 // CMYK: two outputs per file —
