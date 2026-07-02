@@ -84,35 +84,26 @@ function detectCmykInPdf(buffer) {
     return /\/DeviceCMYK/.test(text) || /\/ColorSpace\s*\/CMYK/.test(text) || /\/CS\s*\/CMYK/.test(text);
 }
 
-function decodeCmykJpeg(file, buffer) {
-    return new Promise((resolve, reject) => {
-        const blob = new Blob([buffer], { type: 'image/jpeg' });
-        const url = URL.createObjectURL(blob);
-        const img = new Image();
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-
-            const cmyk = new Uint8Array(rgba.length);
-            for (let i = 0; i < rgba.length; i += 4) {
-                const r = rgba[i] / 255, g = rgba[i+1] / 255, b = rgba[i+2] / 255;
-                const k = 1 - Math.max(r, g, b);
-                const denom = (1 - k) || 1e-6;
-                cmyk[i]   = Math.round(((1 - r - k) / denom) * 255);
-                cmyk[i+1] = Math.round(((1 - g - k) / denom) * 255);
-                cmyk[i+2] = Math.round(((1 - b - k) / denom) * 255);
-                cmyk[i+3] = Math.round(k * 255);
-            }
-            URL.revokeObjectURL(url);
-            resolve({ data: cmyk, width: canvas.width, height: canvas.height });
-        };
-        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Failed to decode JPEG')); };
-        img.src = url;
-    });
+// --- CMYK JPEG TO RGB CANVAS VIA PDF.JS ENGINE ---
+async function renderCmykJpegToCanvas(buffer) {
+    const { PDFDocument } = PDFLib;
+    const pdfDoc = await PDFDocument.create();
+    const image = await pdfDoc.embedJpg(buffer);
+    const { width, height } = image.scale(1);
+    
+    const page = pdfDoc.addPage([width, height]);
+    page.drawImage(image, { x: 0, y: 0, width, height });
+    const pdfBytes = await pdfDoc.save();
+    
+    const pdf = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
+    const pdfPage = await pdf.getPage(1);
+    const viewport = pdfPage.getViewport({ scale: 1 }); 
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    return canvas;
 }
 
 // Local Application Memory State
@@ -171,8 +162,8 @@ async function processFiles(fileList) {
                 const buffer = await file.arrayBuffer();
                 const colorSpace = detectJpegColorSpace(buffer);
                 if (colorSpace === 'cmyk') {
-                    const cmykData = await decodeCmykJpeg(file, buffer);
-                    state.files.push({ name: file.name, type: 'cmyk', cmykData, originalBuffer: buffer });
+                    const canvas = await renderCmykJpegToCanvas(buffer);
+                    state.files.push({ name: file.name, type: 'jpeg-cmyk', canvas: canvas, originalBuffer: buffer });
                     continue;
                 }
             }
@@ -370,6 +361,27 @@ async function buildPantoneBleedPdf(fileItem, bPx, dpi) {
     return outDoc.save();
 }
 
+async function buildJpegCmykBleedPdf(fileItem, bPx, dpi) {
+    const { PDFDocument } = PDFLib;
+    const bleedCanvas = generateRGBBleedCanvas(fileItem.canvas, bPx);
+    const bleedJpegBlob = await new Promise(res => bleedCanvas.toBlob(res, 'image/jpeg', 0.92));
+    const bleedJpegBytes = new Uint8Array(await bleedJpegBlob.arrayBuffer());
+    const originalBytes = new Uint8Array(fileItem.originalBuffer);
+
+    const totalW = bleedCanvas.width, totalH = bleedCanvas.height;
+    const origW = fileItem.canvas.width, origH = fileItem.canvas.height;
+    const pageWidthPt = (totalW / dpi) * 72, pageHeightPt = (totalH / dpi) * 72, bleedOffsetPt = (bPx / dpi) * 72;
+    const origWidthPt = (origW / dpi) * 72, origHeightPt = (origH / dpi) * 72;
+
+    const pdfDoc = await PDFDocument.create(), page = pdfDoc.addPage([pageWidthPt, pageHeightPt]);
+    const bleedImg = await pdfDoc.embedJpg(bleedJpegBytes);
+    page.drawImage(bleedImg, { x: 0, y: 0, width: pageWidthPt, height: pageHeightPt });
+    
+    const origImg = await pdfDoc.embedJpg(originalBytes);
+    page.drawImage(origImg, { x: bleedOffsetPt, y: bleedOffsetPt, width: origWidthPt, height: origHeightPt });
+    return pdfDoc.save(); 
+}
+
 function createGhostRgbCanvas(cmykObj) {
     const canvas = document.createElement('canvas'); canvas.width = cmykObj.width; canvas.height = cmykObj.height;
     const ctx = canvas.getContext('2d'), imgData = ctx.createImageData(cmykObj.width, cmykObj.height);
@@ -392,7 +404,7 @@ async function recalculateAndRender() {
         const card = document.createElement('div'); card.className = 'preview-card';
         let displayWidthIn, displayHeightIn, displayCanvas, innerWidth, innerHeight;
         
-        if (fileItem.type === 'rgb' || fileItem.type === 'pantone' || fileItem.type === 'pdf-cmyk') {
+        if (fileItem.type === 'rgb' || fileItem.type === 'pantone' || fileItem.type === 'pdf-cmyk' || fileItem.type === 'jpeg-cmyk') {
             const bledCanvas = generateRGBBleedCanvas(fileItem.canvas, bPx);
             displayCanvas   = bledCanvas;
             displayWidthIn  = (bledCanvas.width  / state.dpi).toFixed(3); displayHeightIn = (bledCanvas.height / state.dpi).toFixed(3);
@@ -406,6 +418,7 @@ async function recalculateAndRender() {
 
         let modeBadge;
         if (fileItem.type === 'cmyk') modeBadge = `<span class="badge badge-cmyk">CMYK RAW</span>`;
+        else if (fileItem.type === 'jpeg-cmyk') modeBadge = `<span class="badge badge-cmyk">JPEG CMYK</span>`;
         else if (fileItem.type === 'pdf-cmyk') modeBadge = `<span class="badge badge-cmyk">PDF CMYK</span>`;
         else if (fileItem.type === 'pantone') {
             const tipNames = fileItem.pantoneSpots.map(s => s.name).join(', '), shortLabel = fileItem.pantoneSpots.length === 1 ? fileItem.pantoneSpots[0].name : `${fileItem.pantoneSpots.length} Spot Colors`;
@@ -462,17 +475,6 @@ function getChannels(fileItem) {
     return channels;
 }
 
-// ── PDF-Lib Native Separation PDF Generation ──────────────────
-// Process channels (C/M/Y/K) are rebuilt as DUOTONE plates: a pure white-to-single-ink
-// ramp for that one channel only (no blending in the other three process inks).
-// Pantone spot channels keep the original multi-component spot-plate behavior.
-//
-// IMPORTANT: we do NOT use pdfDoc.embedPng() here. pdf-lib embeds PNG images lazily —
-// the actual /Image XObject isn't materialized in the PDF context until .save() runs,
-// so any attempt to look up and mutate its /ColorSpace beforehand is a no-op, and the
-// image silently keeps PNG's default DeviceGray. Instead we build the Image XObject's
-// dictionary ourselves, with /ColorSpace set to our /Separation space from the moment
-// the object is created, so the ink color is guaranteed to stick.
 async function generateSpotPlatePDF(ch, width, height, px, dpi) {
     const { PDFDocument, PDFName } = PDFLib;
     const samples = new Uint8Array(width * height);
@@ -482,9 +484,7 @@ async function generateSpotPlatePDF(ch, width, height, px, dpi) {
 
     if (isDuotone) {
         const ci = ch.channelIndex;
-        // Invert for solid PDF structure: 255 = paper (0%), 0 = full solid ink (100%)
         for (let p = 0; p < width * height; p++) samples[p] = 255 - px[p * 4 + ci];
-        // Duotone: isolate this single ink only — no cross-blend with the other process inks
         if (ci === 0) c = 1; else if (ci === 1) m = 1; else if (ci === 2) y = 1; else if (ci === 3) k = 1;
         spotName = `${ch.label}_Duotone`;
     } else {
@@ -498,14 +498,10 @@ async function generateSpotPlatePDF(ch, width, height, px, dpi) {
     }
 
     const pdfDoc = await PDFDocument.create();
-
-    // Single-ink duotone ramp (white → 100% of this one ink), or full spot-plate tint for Pantone spots
     const tintFunc = pdfDoc.context.obj({ FunctionType: 2, Domain: [0, 1], Range: [0, 1, 0, 1, 0, 1, 0, 1], C0: [0, 0, 0, 0], C1: [c, m, y, k], N: 1 });
     const safeSpotName = spotName.replace(/[\s/()]+/g, '_');
     const sepSpace = pdfDoc.context.obj([ PDFName.of('Separation'), PDFName.of(safeSpotName), PDFName.of('DeviceCMYK'), tintFunc ]);
 
-    // Compress the raw single-channel 8-bit sample buffer directly (no PNG framing needed —
-    // we're building the /Image stream by hand, so FlateDecode on the raw bytes is enough).
     const compressed = await deflateRaw(samples);
 
     const imgRef = pdfDoc.context.register(
@@ -517,7 +513,6 @@ async function generateSpotPlatePDF(ch, width, height, px, dpi) {
             BitsPerComponent: 8,
             ColorSpace: sepSpace,
             Filter: 'FlateDecode',
-            // [1, 0] Decode because 0 in our samples is full ink, 255 is clean white paper.
             Decode: pdfDoc.context.obj([1, 0]),
         })
     );
@@ -541,7 +536,6 @@ async function prerenderChannelPlates(channelData, channels, fileItem) {
     const px = (fileItem.type === 'cmyk') ? fileItem.cmykData.data : data;
     const plates = new Map();
 
-    // Mathematically pre-render exactly what the viewer needs to preview channels rapidly.
     const compCanvas = document.createElement('canvas'); compCanvas.width = width; compCanvas.height = height;
     const compCtx = compCanvas.getContext('2d'), compImg = compCtx.createImageData(width, height), cd = compImg.data;
     if (mode === 'rgb') {
@@ -560,7 +554,6 @@ async function prerenderChannelPlates(channelData, channels, fileItem) {
     }
     compCtx.putImageData(compImg, 0, 0); plates.set('composite', { canvas: compCanvas });
 
-    // Loop through individual plates mathematically (Bypasses pdf.js completely for the UI viewer)
     for (const ch of channels) {
         const cv = document.createElement('canvas'); cv.width = width; cv.height = height;
         const ctx = cv.getContext('2d'), img = ctx.createImageData(width, height), od = img.data;
@@ -836,6 +829,11 @@ async function exportDocumentAsPDF() {
             } else if (fileItem.type === 'pantone' || fileItem.type === 'pdf-cmyk') {
                 const pdfBytes = await buildPantoneBleedPdf(fileItem, bPx, state.dpi), srcDoc = await PDFDocument.load(pdfBytes), [copiedPage] = await masterDoc.copyPages(srcDoc, [0]);
                 masterDoc.addPage(copiedPage);
+            } else if (fileItem.type === 'jpeg-cmyk') {
+                const cmykPdfBytes = await buildJpegCmykBleedPdf(fileItem, bPx, state.dpi);
+                const cmykDoc = await PDFDocument.load(cmykPdfBytes);
+                const [copiedPage] = await masterDoc.copyPages(cmykDoc, [0]);
+                masterDoc.addPage(copiedPage);
             } else {
                 const cmykPdfBytes = await buildCmykBleedPdf(fileItem, bPx, state.dpi), cmykDoc = await PDFDocument.load(cmykPdfBytes), [copiedPage] = await masterDoc.copyPages(cmykDoc, [0]);
                 masterDoc.addPage(copiedPage);
@@ -862,6 +860,8 @@ async function exportSlicesAsZIP() {
                 const pantPdfBytes = await buildPantoneBleedPdf(item, bPx, state.dpi); zipEngine.file(`${cleanName}_bleed_pantone_${i + 1}.pdf`, pantPdfBytes);
             } else if (item.type === 'pdf-cmyk') {
                 const pdfCmykBytes = await buildPantoneBleedPdf(item, bPx, state.dpi); zipEngine.file(`${cleanName}_bleed_cmyk_${i + 1}.pdf`, pdfCmykBytes);
+            } else if (item.type === 'jpeg-cmyk') {
+                const jpegCmykBytes = await buildJpegCmykBleedPdf(item, bPx, state.dpi); zipEngine.file(`${cleanName}_bleed_cmyk_${i + 1}.pdf`, jpegCmykBytes);
             } else {
                 const bleedCMYK = mirrorAndBlurCMYK(item.cmykData, bPx), src = item.cmykData.data, W = item.cmykData.width, H = item.cmykData.height, B = Math.max(0, Math.min(bPx, Math.floor(W/2)-2, Math.floor(H/2)-2)), dW = bleedCMYK.width;
                 for (let y = 0; y < H; y++) {
