@@ -170,6 +170,16 @@ input[type="number"]:focus, select:focus {
     background-color: var(--success-hover);
 }
 
+.btn-warning {
+    background-color: var(--cyber-pink);
+    color: white;
+    box-shadow: 0 0 8px rgba(255, 0, 85, 0.35);
+}
+
+.btn-warning:hover {
+    background-color: #d90048;
+}
+
 .btn:disabled {
     background-color: var(--border);
     color: var(--text-muted);

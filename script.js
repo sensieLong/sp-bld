@@ -108,7 +108,7 @@ async function renderCmykJpegToCanvas(buffer) {
 
 // Local Application Memory State
 const state = {
-    files: [], bleedValue: 0.125, bleedUnit: 'in', dpi: 300, showGuides: true, bleedMode: 'blur-mirror'
+    files: [], bleedValue: 0.125, bleedUnit: 'in', dpi: 300, showGuides: true, bleedMode: 'blur-mirror', baseFilename: null
 };
 
 // DOM Cache
@@ -117,6 +117,7 @@ const dropZone = document.getElementById('dropZone'), fileInput = document.getEl
       bleedUnit = document.getElementById('bleedUnit'), bleedValue = document.getElementById('bleedValue'),
       dpiInput = document.getElementById('dpiInput'), dpiGroup = document.getElementById('dpiGroup'),
       toggleGuides = document.getElementById('toggleGuides'), btnExportPDF = document.getElementById('btnExportPDF'),
+      btnConvertCMYK = document.getElementById('btnConvertCMYK'),
       btnExportZIP = document.getElementById('btnExportZIP'), btnClear = document.getElementById('btnClear'),
       loadingScreen = document.getElementById('loadingScreen'), loadingText = document.getElementById('loadingText'),
       loadingSubtext = document.getElementById('loadingSubtext');
@@ -142,6 +143,7 @@ toggleGuides.addEventListener('change', (e) => { state.showGuides = e.target.che
 btnClear.addEventListener('click', resetApplicationState);
 document.querySelectorAll('input[name="bleedMode"]').forEach(r => r.addEventListener('change', (e) => { state.bleedMode = e.target.value; recalculateAndRender(); }));
 btnExportPDF.addEventListener('click', exportDocumentAsPDF);
+btnConvertCMYK.addEventListener('click', convertRgbFilesToCmykAndExport);
 btnExportZIP.addEventListener('click', exportSlicesAsZIP);
 
 function showLoading(headline, subtitle = "Processing...") { 
@@ -155,6 +157,10 @@ function handleFileSelect(e) { processFiles(e.target.files); }
 async function processFiles(fileList) {
     if (fileList.length === 0) return;
     showLoading("Ingesting Assets", "Analyzing binary headers and color spaces...");
+
+    if (state.files.length === 0 && !state.baseFilename) {
+        state.baseFilename = fileList[0].name.replace(/\.[^/.]+$/, "");
+    }
 
     for (const file of fileList) {
         try {
@@ -190,7 +196,7 @@ async function processFiles(fileList) {
         } catch (err) { console.error(err); alert(`Error parsing file ${file.name}: ${err.message}`); }
     }
     hideLoading();
-    if (state.files.length > 0) { dropZone.style.display = 'none'; workspace.style.display = 'grid'; recalculateAndRender(); }
+    if (state.files.length > 0) { dropZone.style.display = 'none'; workspace.style.display = 'grid'; updateConvertButtonVisibility(); recalculateAndRender(); }
 }
 
 function renderImageToCanvas(file) {
@@ -762,7 +768,55 @@ async function openChannelViewer(fileItem) {
 
 function closeChannelModal() { document.getElementById('channelModal').classList.remove('open'); }
 function toggleGuideVisibility() { document.querySelectorAll('.trim-guide').forEach(g => g.style.display = state.showGuides ? 'block' : 'none'); }
-function resetApplicationState() { state.files = []; previewContainer.innerHTML = ''; fileInput.value = ''; workspace.style.display = 'none'; dropZone.style.display = 'block'; }
+function resetApplicationState() { state.files = []; state.baseFilename = null; previewContainer.innerHTML = ''; fileInput.value = ''; workspace.style.display = 'none'; dropZone.style.display = 'block'; updateConvertButtonVisibility(); }
+
+function updateConvertButtonVisibility() {
+    btnConvertCMYK.style.display = state.files.some(f => f.type === 'rgb') ? 'inline-flex' : 'none';
+}
+
+function buildExportFilename() { return `${state.baseFilename || 'press_ready_proof'}_W-Bleed.pdf`; }
+
+// --- RGB -> CMYK CONVERSION ---
+function rgbCanvasToCmykData(canvas) {
+    const ctx = canvas.getContext('2d');
+    const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const cmyk = new Uint8Array(canvas.width * canvas.height * 4);
+    for (let i = 0; i < rgba.length; i += 4) {
+        const r = rgba[i] / 255, g = rgba[i + 1] / 255, b = rgba[i + 2] / 255;
+        const k = 1 - Math.max(r, g, b), d = (1 - k) || 1e-6;
+        cmyk[i]     = Math.round(((1 - r - k) / d) * 255);
+        cmyk[i + 1] = Math.round(((1 - g - k) / d) * 255);
+        cmyk[i + 2] = Math.round(((1 - b - k) / d) * 255);
+        cmyk[i + 3] = Math.round(k * 255);
+    }
+    return { width: canvas.width, height: canvas.height, data: cmyk };
+}
+
+async function convertRgbFilesToCmyk() {
+    const rgbItems = state.files.filter(f => f.type === 'rgb');
+    for (const item of rgbItems) {
+        item.cmykData = rgbCanvasToCmykData(item.canvas);
+        const jpegBlob = await new Promise(res => item.canvas.toBlob(res, 'image/jpeg', 0.95));
+        item.originalBuffer = await jpegBlob.arrayBuffer();
+        item.type = 'cmyk';
+        await new Promise(r => setTimeout(r, 10));
+    }
+}
+
+async function convertRgbFilesToCmykAndExport() {
+    if (!state.files.some(f => f.type === 'rgb')) return;
+    showLoading("CMYK Conversion", "Converting RGB assets to DeviceCMYK color space...");
+    await new Promise(resolve => setTimeout(resolve, 50));
+    try {
+        await convertRgbFilesToCmyk();
+        updateConvertButtonVisibility();
+        await recalculateAndRender();
+        await exportDocumentAsPDF();
+    } catch (ex) {
+        alert(`CMYK conversion failed: ${ex.message}`);
+        hideLoading();
+    }
+}
 
 function encodeToCMYK_TIFF(cmykDataObj, dpi) {
     const { width, height, data } = cmykDataObj, pixelBytes = width * height * 4;
@@ -840,7 +894,7 @@ async function exportDocumentAsPDF() {
             }
         }
         const pdfBytes = await masterDoc.save(), blob = new Blob([pdfBytes], { type: 'application/pdf' }), a = document.createElement('a');
-        a.href = URL.createObjectURL(blob); a.download = 'press_ready_proof.pdf'; a.click(); URL.revokeObjectURL(a.href);
+        a.href = URL.createObjectURL(blob); a.download = buildExportFilename(); a.click(); URL.revokeObjectURL(a.href);
     } catch (ex) { alert(`Export failed: ${ex.message}`); } finally { hideLoading(); }
 }
 
