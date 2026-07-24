@@ -235,6 +235,32 @@ function calculateBleedInPixels() {
     return Math.round((state.bleedValue / 25.4) * state.dpi);
 }
 
+// Fills a border of thickness `T` around srcCanvas into a destination context sized
+// (W + 2T) x (H + 2T), using either mirror-fold or edge-extend, then draws the source on top.
+function paintBleedStage(sCtx, srcCanvas, W, H, T, doMirror) {
+    if (doMirror) {
+        sCtx.drawImage(srcCanvas, T, T);
+        sCtx.save(); sCtx.translate(T, T); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, 0, W, T, 0, 0, W, T); sCtx.restore();
+        sCtx.save(); sCtx.translate(T, T + H); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, H - T, W, T, 0, -T, W, T); sCtx.restore();
+        sCtx.save(); sCtx.translate(T, T); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, 0, 0, T, H, 0, 0, T, H); sCtx.restore();
+        sCtx.save(); sCtx.translate(T + W, T); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, W - T, 0, T, H, -T, 0, T, H); sCtx.restore();
+        sCtx.save(); sCtx.translate(T, T); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, 0, T, T, 0, 0, T, T); sCtx.restore();
+        sCtx.save(); sCtx.translate(T + W, T); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - T, 0, T, T, -T, 0, T, T); sCtx.restore();
+        sCtx.save(); sCtx.translate(T, T + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, H - T, T, T, 0, -T, T, T); sCtx.restore();
+        sCtx.save(); sCtx.translate(T + W, T + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - T, H - T, T, T, -T, -T, T, T); sCtx.restore();
+    } else {
+        sCtx.drawImage(srcCanvas, 0, 0, W, 1, T, 0, W, T);
+        sCtx.drawImage(srcCanvas, 0, H - 1, W, 1, T, T + H, W, T);
+        sCtx.drawImage(srcCanvas, 0, 0, 1, H, 0, T, T, H);
+        sCtx.drawImage(srcCanvas, W - 1, 0, 1, H, T + W, T, T, H);
+        sCtx.drawImage(srcCanvas, 0, 0, 1, 1, 0, 0, T, T);
+        sCtx.drawImage(srcCanvas, W - 1, 0, 1, 1, T + W, 0, T, T);
+        sCtx.drawImage(srcCanvas, 0, H - 1, 1, 1, 0, T + H, T, T);
+        sCtx.drawImage(srcCanvas, W - 1, H - 1, 1, 1, T + W, T + H, T, T);
+        sCtx.drawImage(srcCanvas, T, T);
+    }
+}
+
 // --- RGB CANVAS ALGORITHM (mode-aware) ---
 function generateRGBBleedCanvas(srcCanvas, bPx, mode) {
     if (!mode) mode = state.bleedMode || 'blur-mirror';
@@ -247,33 +273,33 @@ function generateRGBBleedCanvas(srcCanvas, bPx, mode) {
 
     const doMirror = mode === 'blur-mirror' || mode === 'mirror-only';
     const doBlur   = mode === 'blur-mirror' || mode === 'blur-only';
+    const BLUR_PX  = 4;
 
-    const stage = document.createElement('canvas'); stage.width = outCanvas.width; stage.height = outCanvas.height;
-    const sCtx = stage.getContext('2d');
+    if (doBlur) {
+        // Pad well past the blur radius so the blur kernel always samples real pixel
+        // data instead of the transparent area outside the canvas — otherwise the
+        // convolution darkens/fades the outermost pixels toward transparent-black,
+        // which then flattens to a visible black line once exported as JPEG.
+        const PAD = BLUR_PX * 3;
+        const T = B + PAD;
+        const padded = document.createElement('canvas');
+        padded.width = W + (2 * T); padded.height = H + (2 * T);
+        const pCtx = padded.getContext('2d');
+        paintBleedStage(pCtx, srcCanvas, W, H, T, doMirror);
 
-    if (doMirror) {
-        sCtx.drawImage(srcCanvas, B, B);
-        sCtx.save(); sCtx.translate(B, B); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, 0, W, B, 0, 0, W, B); sCtx.restore();
-        sCtx.save(); sCtx.translate(B, B + H); sCtx.scale(1, -1); sCtx.drawImage(srcCanvas, 0, H - B, W, B, 0, -B, W, B); sCtx.restore();
-        sCtx.save(); sCtx.translate(B, B); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, 0, 0, B, H, 0, 0, B, H); sCtx.restore();
-        sCtx.save(); sCtx.translate(B + W, B); sCtx.scale(-1, 1); sCtx.drawImage(srcCanvas, W - B, 0, B, H, -B, 0, B, H); sCtx.restore();
-        sCtx.save(); sCtx.translate(B, B); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, 0, B, B, 0, 0, B, B); sCtx.restore();
-        sCtx.save(); sCtx.translate(B + W, B); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - B, 0, B, B, -B, 0, B, B); sCtx.restore();
-        sCtx.save(); sCtx.translate(B, B + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, 0, H - B, B, B, 0, -B, B, B); sCtx.restore();
-        sCtx.save(); sCtx.translate(B + W, B + H); sCtx.scale(-1, -1); sCtx.drawImage(srcCanvas, W - B, H - B, B, B, -B, -B, B, B); sCtx.restore();
+        const blurred = document.createElement('canvas');
+        blurred.width = padded.width; blurred.height = padded.height;
+        const bCtx = blurred.getContext('2d');
+        bCtx.filter = `blur(${BLUR_PX}px)`;
+        bCtx.drawImage(padded, 0, 0);
+        bCtx.filter = 'none';
+
+        // Crop the blurred padded image back down, discarding the padding margin
+        // that absorbed the blur's edge artifact.
+        ctx.drawImage(blurred, PAD, PAD, W + 2 * B, H + 2 * B, 0, 0, W + 2 * B, H + 2 * B);
     } else {
-        sCtx.drawImage(srcCanvas, 0, 0, W, 1, B, 0, W, B);
-        sCtx.drawImage(srcCanvas, 0, H - 1, W, 1, B, B + H, W, B);
-        sCtx.drawImage(srcCanvas, 0, 0, 1, H, 0, B, B, H);
-        sCtx.drawImage(srcCanvas, W - 1, 0, 1, H, B + W, B, B, H);
-        sCtx.drawImage(srcCanvas, 0, 0, 1, 1, 0, 0, B, B);
-        sCtx.drawImage(srcCanvas, W - 1, 0, 1, 1, B + W, 0, B, B);
-        sCtx.drawImage(srcCanvas, 0, H - 1, 1, 1, 0, B + H, B, B);
-        sCtx.drawImage(srcCanvas, W - 1, H - 1, 1, 1, B + W, B + H, B, B);
-        sCtx.drawImage(srcCanvas, B, B);
+        paintBleedStage(ctx, srcCanvas, W, H, B, doMirror);
     }
-    if (doBlur) { ctx.filter = 'blur(4px)'; ctx.drawImage(stage, 0, 0); ctx.filter = 'none'; } 
-    else { ctx.drawImage(stage, 0, 0); }
     ctx.drawImage(srcCanvas, B, B);
     return outCanvas;
 }
